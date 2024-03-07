@@ -6,26 +6,35 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { DataSource } from "typeorm";
 
 export const handler = async (req: NextApiRequest, res: NextApiResponse) => {
-  // Δημιουργία του DataSource για MariaDB/MySQL
+  if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is not defined in the environment variables.");
+    res.status(500).json({ error: "Internal server error: DATABASE_URL is not defined." });
+    return;
+  }
+
+  const url = new URL(process.env.DATABASE_URL);
   const datasource = new DataSource({
-    type: "mysql", // Εδώ ρυθμίζουμε τον τύπο της βάσης δεδομένων σε mysql
-    host: process.env.DATABASE_URL.split('@')[1].split('/')[0], // Χρησιμοποιεί τον host από το DATABASE_URL
-    port: 3306, // Βεβαιωθείτε ότι η πόρτα είναι η σωστή για την MariaDB/MySQL σας
-    username: process.env.DATABASE_URL.split('//')[1].split(':')[0], // Χρησιμοποιεί το username από το DATABASE_URL
-    password: process.env.DATABASE_URL.split(':')[2].split('@')[0], // Χρησιμοποιεί τον κωδικό από το DATABASE_URL
-    database: process.env.DATABASE_URL.split('/')[1], // Χρησιμοποιεί το όνομα της βάσης δεδομένων από το DATABASE_URL
+    type: "mysql",
+    host: url.hostname,
+    port: parseInt(url.port, 10) || 3306,
+    username: url.username,
+    password: url.password,
+    database: url.pathname.substr(1) // Remove the leading "/"
   });
 
-  await datasource.initialize();
+  try {
+    await datasource.initialize();
+  } catch (error) {
+    console.error("Failed to initialize datasource:", error);
+    res.status(500).json({ error: "Internal server error: Failed to initialize datasource." });
+    return;
+  }
 
   const db = await SqlDatabase.fromDataSource(datasource);
-
   const toolkit = new SqlToolkit(db);
   const model = new OpenAI({ openAIApiKey: process.env.OPENAI_API_KEY, temperature: 0 });
-  const executor = createSqlAgent(model, toolkit, { topK: 10, prefix: SQL_PREFIX, suffix: SQL_SUFFIX });
+  const executor = createSqlAgent(model, toolkit, { topK: 10, prefix: SQL_PREFIX, suffix: SQL_SUFFIX });	
   const { query: prompt } = req.body;
-
-  console.log("Prompt : " + prompt);
 
   let response = {
     prompt: prompt,
@@ -45,14 +54,13 @@ export const handler = async (req: NextApiRequest, res: NextApiResponse) => {
       }
     });
 
-    console.log(`Intermediate steps ${JSON.stringify(result.intermediateSteps, null, 2)}`);
   } catch (e: any) {
-    console.log(e);
+    console.log(e);		
     response.error = "Server error. Try again with a different prompt.";
-    res.status(200).json(response);
+  } finally {
+    await datasource.destroy();
   }
 
-  await datasource.destroy();
   res.status(200).json(response);
 };
 
